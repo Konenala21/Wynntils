@@ -50,7 +50,7 @@ public class TranslationFeature extends Feature {
     private final Config<String> ollamaBaseUrl = new Config<>("http://127.0.0.1:11434");
 
     @Persisted
-    private final Config<String> ollamaModel = new Config<>("qwen3.5");
+    private final Config<String> ollamaModel = new Config<>("qwen3.5:4b");
 
     public TranslationFeature() {
         super(ProfileDefault.DISABLED);

@@ -1576,7 +1576,7 @@
   "feature.wynntils.translation.name": "Translation",
   "feature.wynntils.translation.ollamaBaseUrl.description": "The base URL of your Ollama server. Required when using the Ollama translation service.",
   "feature.wynntils.translation.ollamaBaseUrl.name": "Ollama Base URL",
-  "feature.wynntils.translation.ollamaModel.description": "The Ollama model name to use for translation. For your setup this should be qwen3.5.",
+  "feature.wynntils.translation.ollamaModel.description": "The Ollama model name to use for translation. For most setups qwen3.5:4b is the best default.",
   "feature.wynntils.translation.ollamaModel.name": "Ollama Model",
   "feature.wynntils.translation.translateInfo.description": "Should messages such as system information, be translated?",
   "feature.wynntils.translation.translateInfo.name": "Info Messages",
