@@ -15,6 +15,8 @@ import com.wynntils.core.text.StyledText;
 import com.wynntils.core.text.type.StyleType;
 import com.wynntils.handlers.chat.event.ChatMessageEvent;
 import com.wynntils.handlers.chat.type.RecipientType;
+import com.wynntils.services.translation.DeepLTranslationProvider;
+import com.wynntils.services.translation.OllamaTranslationProvider;
 import com.wynntils.services.translation.TranslationService;
 import com.wynntils.utils.mc.McUtils;
 import java.util.List;
@@ -41,8 +43,25 @@ public class TranslationFeature extends Feature {
     private final Config<TranslationService.TranslationServices> translationService =
             new Config<>(TranslationService.TranslationServices.GOOGLEAPI);
 
+    @Persisted
+    private final Config<String> deeplApiKey = new Config<>("");
+
+    @Persisted
+    private final Config<String> ollamaBaseUrl = new Config<>("http://127.0.0.1:11434");
+
+    @Persisted
+    private final Config<String> ollamaModel = new Config<>("qwen3.5");
+
     public TranslationFeature() {
         super(ProfileDefault.DISABLED);
+    }
+
+    @Override
+    protected void onConfigUpdate(Config<?> config) {
+        switch (config.getFieldName()) {
+            case "translationService", "ollamaBaseUrl", "ollamaModel" -> Services.Translation.resetTranslator();
+            default -> {}
+        }
     }
 
     @SubscribeEvent
@@ -51,6 +70,14 @@ public class TranslationFeature extends Feature {
 
         if (e.getRecipientType() != RecipientType.INFO && !translatePlayerChat.get()) return;
         if (e.getRecipientType() == RecipientType.INFO && !translateInfo.get()) return;
+
+        if (translationService.get() == TranslationService.TranslationServices.DEEPL) {
+            DeepLTranslationProvider.setApiKey(deeplApiKey.get());
+        }
+        if (translationService.get() == TranslationService.TranslationServices.OLLAMA) {
+            OllamaTranslationProvider.setBaseUrl(ollamaBaseUrl.get());
+            OllamaTranslationProvider.setModel(ollamaModel.get());
+        }
 
         StyledText originalMessage = e.getMessage();
         String codedString = wrapCoding(originalMessage);
