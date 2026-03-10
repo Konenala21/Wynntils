@@ -1,0 +1,457 @@
+diff --git a/common/src/main/java/com/wynntils/features/utilities/TranslationFeature.java b/common/src/main/java/com/wynntils/features/utilities/TranslationFeature.java
+index 7dd9a7d53..f4fe0a58f 100644
+--- a/common/src/main/java/com/wynntils/features/utilities/TranslationFeature.java
++++ b/common/src/main/java/com/wynntils/features/utilities/TranslationFeature.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright © Wynntils 2022-2025.
++ * Copyright © Wynntils 2022-2026.
+  * This file is released under LGPLv3. See LICENSE for full license details.
+  */
+ package com.wynntils.features.utilities;
+@@ -17,6 +17,8 @@ import com.wynntils.core.text.type.StyleType;
+ import com.wynntils.handlers.chat.event.ChatMessageEvent;
+ import com.wynntils.handlers.chat.type.RecipientType;
+ import com.wynntils.models.npcdialogue.event.NpcDialogueProcessingEvent;
++import com.wynntils.services.translation.DeepLTranslationProvider;
++import com.wynntils.services.translation.OllamaTranslationProvider;
+ import com.wynntils.services.translation.TranslationService;
+ import com.wynntils.utils.mc.McUtils;
+ import java.util.ArrayList;
+@@ -49,10 +51,27 @@ public class TranslationFeature extends Feature {
+     private final Config<TranslationService.TranslationServices> translationService =
+             new Config<>(TranslationService.TranslationServices.GOOGLEAPI);
+ 
++    @Persisted
++    private final Config<String> deeplApiKey = new Config<>("");
++
++    @Persisted
++    private final Config<String> ollamaBaseUrl = new Config<>("http://127.0.0.1:11434");
++
++    @Persisted
++    private final Config<String> ollamaModel = new Config<>("qwen3.5");
++
+     public TranslationFeature() {
+         super(ProfileDefault.DISABLED);
+     }
+ 
++    @Override
++    protected void onConfigUpdate(Config<?> config) {
++        switch (config.getFieldName()) {
++            case "translationService", "ollamaBaseUrl", "ollamaModel" -> Services.Translation.resetTranslator();
++            default -> {}
++        }
++    }
++
+     @SubscribeEvent
+     public void onChat(ChatMessageEvent.Match e) {
+         if (languageName.get().isEmpty()) return;
+@@ -60,6 +79,14 @@ public class TranslationFeature extends Feature {
+         if (e.getRecipientType() != RecipientType.INFO && !translatePlayerChat.get()) return;
+         if (e.getRecipientType() == RecipientType.INFO && !translateInfo.get()) return;
+ 
++        if (translationService.get() == TranslationService.TranslationServices.DEEPL) {
++            DeepLTranslationProvider.setApiKey(deeplApiKey.get());
++        }
++        if (translationService.get() == TranslationService.TranslationServices.OLLAMA) {
++            OllamaTranslationProvider.setBaseUrl(ollamaBaseUrl.get());
++            OllamaTranslationProvider.setModel(ollamaModel.get());
++        }
++
+         StyledText originalMessage = e.getMessage();
+         String codedString = wrapCoding(originalMessage);
+         Services.Translation.getTranslator(translationService.get())
+@@ -90,6 +117,14 @@ public class TranslationFeature extends Feature {
+         if (!translateNpc.get()) return;
+         if (languageName.get().isEmpty()) return;
+ 
++        if (translationService.get() == TranslationService.TranslationServices.DEEPL) {
++            DeepLTranslationProvider.setApiKey(deeplApiKey.get());
++        }
++        if (translationService.get() == TranslationService.TranslationServices.OLLAMA) {
++            OllamaTranslationProvider.setBaseUrl(ollamaBaseUrl.get());
++            OllamaTranslationProvider.setModel(ollamaModel.get());
++        }
++
+         event.addProcessingStep(future -> future.thenCompose(styledTexts -> {
+             if (styledTexts.isEmpty()) return CompletableFuture.completedFuture(styledTexts);
+ 
+diff --git a/common/src/main/java/com/wynntils/services/translation/CachingTranslationProvider.java b/common/src/main/java/com/wynntils/services/translation/CachingTranslationProvider.java
+index 2b02e1d27..7f91c6ec0 100644
+--- a/common/src/main/java/com/wynntils/services/translation/CachingTranslationProvider.java
++++ b/common/src/main/java/com/wynntils/services/translation/CachingTranslationProvider.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright © Wynntils 2018-2025.
++ * Copyright © Wynntils 2018-2026.
+  * This file is released under LGPLv3. See LICENSE for full license details.
+  */
+ package com.wynntils.services.translation;
+@@ -14,6 +14,7 @@ import java.io.IOException;
+ import java.lang.reflect.Type;
+ import java.util.HashMap;
+ import java.util.List;
++import java.util.Locale;
+ import java.util.Map;
+ import java.util.concurrent.ConcurrentHashMap;
+ import java.util.function.Consumer;
+@@ -29,8 +30,10 @@ public abstract class CachingTranslationProvider implements TranslationProvider
+     protected abstract void translateNew(
+             List<String> message, String toLanguage, Consumer<List<String>> handleTranslation);
+ 
++    protected abstract String getCacheNamespace();
++
+     protected void saveTranslation(String toLanguage, List<String> message, List<String> translatedMessage) {
+-        Map<String, List<String>> translationCache = translationCaches.get(toLanguage);
++        Map<String, List<String>> translationCache = translationCaches.get(createLanguageCacheKey(toLanguage));
+         translationCache.put(createKey(message), translatedMessage);
+         counter++;
+         if (counter % 16 == 0) {
+@@ -47,7 +50,7 @@ public abstract class CachingTranslationProvider implements TranslationProvider
+         }
+ 
+         Map<String, List<String>> translationCache =
+-                translationCaches.computeIfAbsent(toLanguage, k -> new ConcurrentHashMap<>());
++                translationCaches.computeIfAbsent(createLanguageCacheKey(toLanguage), k -> new ConcurrentHashMap<>());
+         List<String> cachedTranslation = translationCache.get(createKey(message));
+         if (cachedTranslation != null) {
+             TaskUtils.runAsync(() -> handleTranslation.accept(cachedTranslation));
+@@ -102,4 +105,8 @@ public abstract class CachingTranslationProvider implements TranslationProvider
+     private String createKey(List<String> message) {
+         return String.join("", message);
+     }
++
++    private String createLanguageCacheKey(String toLanguage) {
++        return getCacheNamespace() + ":" + toLanguage.toLowerCase(Locale.ROOT);
++    }
+ }
+diff --git a/common/src/main/java/com/wynntils/services/translation/GoogleApiTranslationProvider.java b/common/src/main/java/com/wynntils/services/translation/GoogleApiTranslationProvider.java
+index cc19db829..1c5513d6f 100644
+--- a/common/src/main/java/com/wynntils/services/translation/GoogleApiTranslationProvider.java
++++ b/common/src/main/java/com/wynntils/services/translation/GoogleApiTranslationProvider.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright © Wynntils 2018-2023.
++ * Copyright © Wynntils 2018-2026.
+  * This file is released under LGPLv3. See LICENSE for full license details.
+  */
+ package com.wynntils.services.translation;
+@@ -21,6 +21,11 @@ import java.util.function.Consumer;
+  * sufficient for NPCs translation, but not for general chat messages, at least not in chatty areas like Detlas.
+  */
+ public class GoogleApiTranslationProvider extends CachingTranslationProvider {
++    @Override
++    protected String getCacheNamespace() {
++        return "googleapi";
++    }
++
+     @Override
+     protected void translateNew(List<String> messageList, String toLanguage, Consumer<List<String>> handleTranslation) {
+         if (toLanguage == null || toLanguage.isEmpty()) {
+@@ -49,8 +54,9 @@ public class GoogleApiTranslationProvider extends CachingTranslationProvider {
+                     handleTranslation.accept(result);
+                 },
+                 onError -> {
+-                    // If Google translate return no data ( 500 error ), display default lang
+-                    handleTranslation.accept(List.copyOf(messageList));
++                    // If Google translate returns no data (500 error / rate limit), return empty list
++                    // so TranslationFeature can handle it correctly based on keepOriginal setting
++                    handleTranslation.accept(List.of());
+                 });
+     }
+ }
+diff --git a/common/src/main/java/com/wynntils/services/translation/TranslationService.java b/common/src/main/java/com/wynntils/services/translation/TranslationService.java
+index 24df3f9f0..3107dc3ac 100644
+--- a/common/src/main/java/com/wynntils/services/translation/TranslationService.java
++++ b/common/src/main/java/com/wynntils/services/translation/TranslationService.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright © Wynntils 2018-2024.
++ * Copyright © Wynntils 2018-2026.
+  * This file is released under LGPLv3. See LICENSE for full license details.
+  */
+ package com.wynntils.services.translation;
+@@ -70,7 +70,7 @@ public final class TranslationService extends Service {
+      */
+     public TranslationProvider getTranslator(TranslationService.TranslationServices translationService) {
+         // These might not have been created yet, or reset by config changing
+-        if (translator == null) {
++        if (translator == null || !translationService.serviceClass.isInstance(translator)) {
+             translator = getService(translationService);
+         }
+         return translator;
+@@ -91,7 +91,9 @@ public final class TranslationService extends Service {
+     }
+ 
+     public enum TranslationServices {
+-        GOOGLEAPI(GoogleApiTranslationProvider.class);
++        GOOGLEAPI(GoogleApiTranslationProvider.class),
++        DEEPL(DeepLTranslationProvider.class),
++        OLLAMA(OllamaTranslationProvider.class);
+ 
+         // This is a demo service, not used in production.
+         // Users accidentally enabling this service could cause confusion and frustration.
+diff --git a/common/src/main/resources/assets/wynntils/lang/en_us.json b/common/src/main/resources/assets/wynntils/lang/en_us.json
+index 5d3cb4584..773dd264e 100644
+--- a/common/src/main/resources/assets/wynntils/lang/en_us.json
++++ b/common/src/main/resources/assets/wynntils/lang/en_us.json
+@@ -1621,12 +1621,18 @@
+   "feature.wynntils.transcribeMessages.transcribedFrom": "Transcribed from %s, %s",
+   "feature.wynntils.transcribeMessages.wynnicColor.description": "What color should Wynnic transcriptions be?",
+   "feature.wynntils.transcribeMessages.wynnicColor.name": "Wynnic Color",
++  "feature.wynntils.translation.deeplApiKey.description": "Your DeepL Free API key. Get one for free at deepl.com/pro-api (500,000 characters/month free). Required when using the DeepL translation service.",
++  "feature.wynntils.translation.deeplApiKey.name": "DeepL API Key",
+   "feature.wynntils.translation.description": "Adds the ability to translate Wynntils to your language.",
+   "feature.wynntils.translation.keepOriginal.description": "Should the original message be displayed alongside the translation?",
+   "feature.wynntils.translation.keepOriginal.name": "Display Original",
+   "feature.wynntils.translation.languageName.description": "What is the ISO two letter language code of the target language? (You can find a list of ISO codes by searching for `List of ISO 639-1 codes` on Wikipedia.)",
+   "feature.wynntils.translation.languageName.name": "Target Language Code",
+   "feature.wynntils.translation.name": "Translation",
++  "feature.wynntils.translation.ollamaBaseUrl.description": "The base URL of your Ollama server. Required when using the Ollama translation service.",
++  "feature.wynntils.translation.ollamaBaseUrl.name": "Ollama Base URL",
++  "feature.wynntils.translation.ollamaModel.description": "The Ollama model name to use for translation. For your setup this should be qwen3.5.",
++  "feature.wynntils.translation.ollamaModel.name": "Ollama Model",
+   "feature.wynntils.translation.translateInfo.description": "Should messages such as system information, be translated?",
+   "feature.wynntils.translation.translateInfo.name": "Info Messages",
+   "feature.wynntils.translation.translateNpc.description": "Should messages spoken by NPCs be translated?",
+diff --git a/common/src/main/java/com/wynntils/services/translation/DeepLTranslationProvider.java b/common/src/main/java/com/wynntils/services/translation/DeepLTranslationProvider.java
+new file mode 100755
+index 000000000..d0a3f5bf1
+--- /dev/null
++++ b/common/src/main/java/com/wynntils/services/translation/DeepLTranslationProvider.java
+@@ -0,0 +1,104 @@
++/*
++ * Copyright © Wynntils 2025-2026.
++ * This file is released under LGPLv3. See LICENSE for full license details.
++ */
++package com.wynntils.services.translation;
++
++import com.google.gson.JsonArray;
++import com.google.gson.JsonObject;
++import com.wynntils.core.WynntilsMod;
++import java.net.URI;
++import java.net.http.HttpClient;
++import java.net.http.HttpRequest;
++import java.net.http.HttpResponse;
++import java.nio.charset.StandardCharsets;
++import java.time.Duration;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.function.Consumer;
++
++/**
++ * A TranslationProvider that uses the DeepL Free API.
++ * Requires a free API key from https://www.deepl.com/pro-api
++ * Free tier allows up to 500,000 characters per month.
++ * For Traditional Chinese, use language code "ZH-HANT".
++ */
++public class DeepLTranslationProvider extends CachingTranslationProvider {
++    private static final String DEEPL_FREE_API_URL = "https://api-free.deepl.com/v2/translate";
++    private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
++
++    private static String apiKey = "";
++
++    public static void setApiKey(String key) {
++        apiKey = key;
++    }
++
++    @Override
++    protected String getCacheNamespace() {
++        return "deepl";
++    }
++
++    @Override
++    protected void translateNew(List<String> messageList, String toLanguage, Consumer<List<String>> handleTranslation) {
++        if (apiKey == null || apiKey.isBlank()) {
++            WynntilsMod.warn("DeepL API key is not set. Please set it in the Translation feature settings.");
++            handleTranslation.accept(List.of());
++            return;
++        }
++
++        JsonObject body = new JsonObject();
++        JsonArray textArray = new JsonArray();
++        messageList.forEach(textArray::add);
++        body.add("text", textArray);
++        body.addProperty("target_lang", toLanguage.toUpperCase());
++        body.addProperty("source_lang", "EN");
++
++        HttpRequest request = HttpRequest.newBuilder()
++                .uri(URI.create(DEEPL_FREE_API_URL))
++                .timeout(Duration.ofSeconds(10))
++                .header("Authorization", "DeepL-Auth-Key " + apiKey)
++                .header("Content-Type", "application/json")
++                .POST(HttpRequest.BodyPublishers.ofString(body.toString(), StandardCharsets.UTF_8))
++                .build();
++
++        HTTP_CLIENT
++                .sendAsync(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
++                .thenAccept(response -> {
++                    try {
++                        if (response.statusCode() == 403) {
++                            WynntilsMod.warn("DeepL API: Invalid API key (403 Forbidden).");
++                            handleTranslation.accept(List.of());
++                            return;
++                        }
++                        if (response.statusCode() == 456) {
++                            WynntilsMod.warn("DeepL API: Monthly character limit exceeded (456).");
++                            handleTranslation.accept(List.of());
++                            return;
++                        }
++                        if (response.statusCode() != 200) {
++                            WynntilsMod.warn("DeepL API returned unexpected status: " + response.statusCode());
++                            handleTranslation.accept(List.of());
++                            return;
++                        }
++
++                        JsonObject json = WynntilsMod.GSON.fromJson(response.body(), JsonObject.class);
++                        JsonArray translations = json.getAsJsonArray("translations");
++                        List<String> result = new ArrayList<>();
++                        for (var elem : translations) {
++                            result.add(elem.getAsJsonObject().get("text").getAsString());
++                        }
++
++                        saveTranslation(toLanguage, messageList, result);
++                        handleTranslation.accept(result);
++                    } catch (Exception e) {
++                        WynntilsMod.error("Failed to parse DeepL API response.", e);
++                        handleTranslation.accept(List.of());
++                    }
++                })
++                .exceptionally(e -> {
++                    WynntilsMod.error("DeepL API request failed.", e);
++                    handleTranslation.accept(List.of());
++                    return null;
++                });
++    }
++}
+diff --git a/common/src/main/java/com/wynntils/services/translation/OllamaTranslationProvider.java b/common/src/main/java/com/wynntils/services/translation/OllamaTranslationProvider.java
+new file mode 100755
+index 000000000..c81d82fb1
+--- /dev/null
++++ b/common/src/main/java/com/wynntils/services/translation/OllamaTranslationProvider.java
+@@ -0,0 +1,125 @@
++/*
++ * Copyright © Wynntils 2026.
++ * This file is released under LGPLv3. See LICENSE for full license details.
++ */
++package com.wynntils.services.translation;
++
++import com.google.gson.JsonArray;
++import com.google.gson.JsonObject;
++import com.wynntils.core.WynntilsMod;
++import com.wynntils.utils.TaskUtils;
++import java.net.URI;
++import java.net.http.HttpClient;
++import java.net.http.HttpRequest;
++import java.net.http.HttpResponse;
++import java.nio.charset.StandardCharsets;
++import java.time.Duration;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.function.Consumer;
++
++public class OllamaTranslationProvider extends CachingTranslationProvider {
++    private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
++    private static final String DEFAULT_BASE_URL = "http://127.0.0.1:11434";
++    private static final String DEFAULT_MODEL = "qwen3.5";
++
++    private static String baseUrl = DEFAULT_BASE_URL;
++    private static String model = DEFAULT_MODEL;
++
++    public static void setBaseUrl(String url) {
++        baseUrl = sanitizeBaseUrl(url);
++    }
++
++    public static void setModel(String modelName) {
++        model = modelName == null || modelName.isBlank() ? DEFAULT_MODEL : modelName.trim();
++    }
++
++    @Override
++    protected void translateNew(List<String> messageList, String toLanguage, Consumer<List<String>> handleTranslation) {
++        if (toLanguage == null || toLanguage.isBlank()) {
++            handleTranslation.accept(List.copyOf(messageList));
++            return;
++        }
++
++        TaskUtils.runAsync(() -> {
++            List<String> translatedMessages = new ArrayList<>();
++
++            for (String message : messageList) {
++                String translatedMessage = translateSingle(message, toLanguage);
++                if (translatedMessage == null) {
++                    handleTranslation.accept(List.of());
++                    return;
++                }
++                translatedMessages.add(translatedMessage);
++            }
++
++            saveTranslation(toLanguage, messageList, translatedMessages);
++            handleTranslation.accept(translatedMessages);
++        });
++    }
++
++    @Override
++    protected String getCacheNamespace() {
++        return "ollama:" + model;
++    }
++
++    private String translateSingle(String message, String toLanguage) {
++        try {
++            JsonObject requestBody = new JsonObject();
++            requestBody.addProperty("model", model);
++            requestBody.addProperty("stream", false);
++
++            JsonArray messages = new JsonArray();
++
++            JsonObject systemMessage = new JsonObject();
++            systemMessage.addProperty("role", "system");
++            systemMessage.addProperty(
++                    "content",
++                    "You are a translation engine. Translate the user's English text into the requested target language. "
++                            + "Preserve placeholders like {§a}, [§1], and <§2> exactly. Return only the translated text.");
++            messages.add(systemMessage);
++
++            JsonObject userMessage = new JsonObject();
++            userMessage.addProperty("role", "user");
++            userMessage.addProperty("content", "Target language code: " + toLanguage + "\nText:\n" + message);
++            messages.add(userMessage);
++
++            requestBody.add("messages", messages);
++
++            HttpRequest request = HttpRequest.newBuilder()
++                    .uri(URI.create(sanitizeBaseUrl(baseUrl) + "/api/chat"))
++                    .timeout(Duration.ofSeconds(30))
++                    .header("Content-Type", "application/json")
++                    .POST(HttpRequest.BodyPublishers.ofString(requestBody.toString(), StandardCharsets.UTF_8))
++                    .build();
++
++            HttpResponse<String> response =
++                    HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
++
++            if (response.statusCode() != 200) {
++                WynntilsMod.warn("Ollama API returned unexpected status: " + response.statusCode());
++                return null;
++            }
++
++            JsonObject json = WynntilsMod.GSON.fromJson(response.body(), JsonObject.class);
++            JsonObject responseMessage = json.getAsJsonObject("message");
++            if (responseMessage == null || !responseMessage.has("content")) {
++                WynntilsMod.warn("Ollama API returned no message content.");
++                return null;
++            }
++
++            return responseMessage.get("content").getAsString().trim();
++        } catch (Exception e) {
++            WynntilsMod.error("Ollama API request failed.", e);
++            return null;
++        }
++    }
++
++    private static String sanitizeBaseUrl(String url) {
++        String sanitized = url == null || url.isBlank() ? DEFAULT_BASE_URL : url.trim();
++        while (sanitized.endsWith("/")) {
++            sanitized = sanitized.substring(0, sanitized.length() - 1);
++        }
++        return sanitized;
++    }
++}
