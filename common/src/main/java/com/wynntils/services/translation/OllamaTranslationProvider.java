@@ -21,7 +21,7 @@ import java.util.function.Consumer;
 public class OllamaTranslationProvider extends CachingTranslationProvider {
     private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
     private static final String DEFAULT_BASE_URL = "http://127.0.0.1:11434";
-    private static final String DEFAULT_MODEL = "qwen3.5";
+    private static final String DEFAULT_MODEL = "qwen3.5:4b";
 
     private static String baseUrl = DEFAULT_BASE_URL;
     private static String model = DEFAULT_MODEL;
@@ -68,6 +68,7 @@ public class OllamaTranslationProvider extends CachingTranslationProvider {
             JsonObject requestBody = new JsonObject();
             requestBody.addProperty("model", model);
             requestBody.addProperty("stream", false);
+            requestBody.addProperty("think", false);
 
             JsonArray messages = new JsonArray();
 
@@ -75,13 +76,24 @@ public class OllamaTranslationProvider extends CachingTranslationProvider {
             systemMessage.addProperty("role", "system");
             systemMessage.addProperty(
                     "content",
-                    "You are a translation engine. Translate the user's English text into the requested target language. "
-                            + "Preserve placeholders like {§a}, [§1], and <§2> exactly. Return only the translated text.");
+                    "You are a game text translation engine. Translate the provided text into the requested target language. "
+                            + "Return only the final translated text with no explanations, notes, quotes, prefixes, or markdown. "
+                            + "Preserve the exact number of lines and line order. Preserve all whitespace as much as possible. "
+                            + "Do not remove, add, or modify placeholders, formatting tokens, control codes, or symbols such as "
+                            + "{§a}, [§1], <§2>, §, %, numbers, and punctuation unless translation requires surrounding words to change. "
+                            + "Keep names, proper nouns, item names, quest names, and game-specific terms unchanged when uncertain. "
+                            + "If the text is already in the target language, return it unchanged.");
             messages.add(systemMessage);
 
             JsonObject userMessage = new JsonObject();
             userMessage.addProperty("role", "user");
-            userMessage.addProperty("content", "Target language code: " + toLanguage + "\nText:\n" + message);
+            userMessage.addProperty(
+                    "content",
+                    "Target language code: " + toLanguage + "\n"
+                            + "Translate the text below.\n"
+                            + "Output only the translation.\n"
+                            + "Text:\n"
+                            + message);
             messages.add(userMessage);
 
             requestBody.add("messages", messages);
